@@ -16,10 +16,7 @@
 //#include <pcl/filters/voxel_grid.h>
 //#include <pcl/filters/statistical_outlier_removal.h>
 //#include <pcl/PCLPointCloud2.h>
-#include <ros/ros.h>
-#include <pcl_ros/point_cloud.h>
-#include <tf/transform_listener.h>
-#include <tf_conversions/tf_eigen.h>
+
 #include "basicFunctions.h"
 #include "particle_filter_fast.h"
 
@@ -27,39 +24,18 @@
 #include "data_model.hpp"
 #include "point_types.h"
 #include "cudaWrapper.h"
-float colors[16][3] =
-		{1.0f, 0.0f, 0.0f,
-		0.0f, 1.0f, 0.0f,
-		0.0f, 0.0f, 1.0f,
-		1.0f, 1.0f, 1.0f,
-		0.4f, 0.1f, 0.7f,
-		0.6f, 0.1f, 0.8f,
-		0.8f, 0.4f, 0.9f,
-		0.1f, 0.6f, 0.1f,
-		0.3f, 0.1f, 0.2f,
-		0.4f, 0.5f, 0.9f,
-		0.4f, 0.5f, 0.1f,
-		0.4f, 0.1f, 0.9f,
-		0.4f, 0.6f, 0.9f,
-		0.1f, 0.5f, 0.9f,
-		0.4f, 0.1f, 0.1f,
-		0.4f, 0.2f, 0.4f};
 
-const unsigned int window_width  = 512;
-const unsigned int window_height = 512;
-int mouse_old_x, mouse_old_y;
-int mouse_buttons = 0;
-float rotate_x = 0.0, rotate_y = 0.0;
-float translate_z = -150.0;
-float translate_x, translate_y = 0.0;
+// ros
 
-pcl::PointCloud<Semantic::PointXYZL> point_cloud_semantic_map;
-pcl::PointCloud<pcl::PointXYZ> point_cloud_semantic_map_label_floor_ground;
+#include <ros/ros.h>
+#include <pcl_ros/point_cloud.h>
+#include <tf/transform_listener.h>
+#include <tf_conversions/tf_eigen.h>
+#include <geometry_msgs/PoseArray.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <nav_msgs/Odometry.h>
 
-pcl::PointCloud<Semantic::PointXYZL> winning_point_cloud;
-
-tf::TransformListener* tf_listener;
-Eigen::Affine3f lastOdometry = Eigen::Affine3f::Identity();
+void classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out);
 
 typedef struct scan_with_odo
 {
@@ -70,35 +46,291 @@ typedef struct scan_with_odo
 
 
 
-float motion_model_max_angle = 10.0f;
-float motion_model_max_translation = 0.5f;
-float max_particle_size = 1000;
-float max_particle_size_kidnapped_robot = 10000;
-float distance_above_Z = 1.0f;
-float rgd_resolution = 1.0f;
-int cuda_device = 0;
-int max_number_considered_in_INNER_bucket = 5;
-int max_number_considered_in_OUTER_bucket = 5;
-float overlap_threshold = 0.01f;
-float propability_threshold = 0.1;
-float rgd_2D_res = 5.0f;
-CParticleFilterFast particle_filter;
+class nodePF
+{
+public:
+	nodePF():
+	n("~")
+	{
+		lastOdometry = Eigen::Affine3f::Identity();
 
-bool is_iteration = false;
-bool show_winning_point_cloud = true;
+		std::string topic_laser3D;
+		n.param<std::string>("topic_laser3D", topic_laser3D, "/velodyne_points");
+		ROS_INFO("param topic_laser3D: '%s'", topic_laser3D.c_str());
 
-bool initGL(int *argc, char **argv);
-void display();
-void keyboard(unsigned char key, int x, int y);
-void mouse(int button, int state, int x, int y);
-void reshape(int width, int height);
-void motion(int x, int y);
-void printHelp();
-void singleIteration();
+		//subInput   = n.subscribe(topic_laser3D,1, &nodeSlam::scanCallback, this);
+		subInput   			= n.subscribe(topic_laser3D,1, &nodePF::scanCallback, this);
+		subPose   			= n.subscribe("/initialpose",1, &nodePF::initalPoseCallback, this);
 
-void scanCallback(pcl::PointCloud<pcl::PointXYZ> scan);
+		bestPointcloudPub 	= n.advertise<pcl::PointCloud<Semantic::PointXYZL> >("bestPointCloud",1);
+		mapPointcloudPub	= n.advertise<pcl::PointCloud<Semantic::PointXYZL> >("mapPointCloud",1);;
+		particlePub			= n.advertise<geometry_msgs::PoseArray>("particles",1);
+		odometryPub			= n.advertise<nav_msgs::Odometry>("odometry",1);
 
 
+		//motion_model_max_angle = 10.0f;
+		n.param<float>("motion_model_max_angle", motion_model_max_angle, 5.0f);
+
+		//motion_model_max_translation = 0.5f;
+		n.param<float>("motion_model_max_translation", motion_model_max_translation, 0.3f);
+
+		//max_particle_size = 1000;
+		n.param<int>("max_particle_size", max_particle_size, 200);
+
+
+		//max_particle_size_kidnapped_robot = 10000;
+		n.param<int>("max_particle_size_kidnapped_robot", max_particle_size_kidnapped_robot, 200);
+
+		//distance_above_Z = 1.0f;
+		n.param<float>("distance_above_Z", distance_above_Z, 1);
+
+
+		//rgd_resolution = 1.0f;
+		n.param<float>("rgd_resolution", rgd_resolution, 1);
+
+		//cuda_device = 0;
+		n.param<int>("cuda_device", cuda_device, 0);
+
+		//max_number_considered_in_INNER_bucket = 5;
+		n.param<int>("max_number_considered_in_INNER_bucket", max_number_considered_in_INNER_bucket, 5);
+
+		//max_number_considered_in_OUTER_bucket = 5;
+		n.param<int>("max_number_considered_in_OUTER_bucket", max_number_considered_in_OUTER_bucket, 5);
+
+		//overlap_threshold = 0.01f;
+		n.param<float>("overlap_threshold", overlap_threshold, 0.01f);
+
+		//propability_threshold = 0.1;
+		n.param<float>("propability_threshold", propability_threshold, 0.1);
+
+		//rgd_2D_res = 5.0f;
+		n.param<float>("rgd_2D_res", rgd_2D_res, 5.0f);
+
+		std::string fnMapClassified;
+		std::string fnMap;
+		n.param<std::string>("mapClassified", fnMapClassified,"");
+		n.param<std::string>("map", fnMap, "");
+
+		if (fnMapClassified.size() != 0 && fnMap.size() !=0)
+		{
+			ROS_FATAL("only one of parameter mapClassified and map can be set.");
+			exit(-1);
+		}
+		if (fnMapClassified.size() == 0 && fnMap.size() ==0)
+		{
+			ROS_FATAL("no map given. closing");
+			exit(-1);
+		}
+
+		// load PCD and classify
+		if (fnMap.size() != 0)
+		{
+			pcl::PointCloud<pcl::PointXYZ> pointcloud_notlabeled;
+			ROS_INFO("Loading pcd file : %s", fnMap.c_str());
+			if(pcl::io::loadPCDFile(fnMap,pointcloud_notlabeled) == -1)
+			{
+				ROS_FATAL("cannot load PCD!");
+				exit(-1);
+			}
+			classify(pointcloud_notlabeled, point_cloud_semantic_map);
+		}
+		// load PCD only
+		if (fnMapClassified.size() != 0)
+		{
+			ROS_INFO("Loading pcd file : %s", fnMapClassified.c_str());
+			if(pcl::io::loadPCDFile(fnMapClassified,point_cloud_semantic_map) == -1)
+			{
+				ROS_FATAL("cannot load PCD!");
+				exit(-1);
+			}
+		}
+
+
+		for(size_t i = 0 ; i < point_cloud_semantic_map.size(); i++)
+		{
+			if(point_cloud_semantic_map[i].label == FLOOR_GROUND)
+			{
+				pcl::PointXYZ p;
+				p.x = point_cloud_semantic_map[i].x;
+				p.y = point_cloud_semantic_map[i].y;
+				p.z = point_cloud_semantic_map[i].z;
+				point_cloud_semantic_map_label_floor_ground.push_back(p);
+			}
+		}
+
+		ROS_INFO("point_cloud_semantic_map_label_floor_ground size : %d", point_cloud_semantic_map_label_floor_ground.size());
+
+
+		if(!particle_filter.init(cuda_device,
+				motion_model_max_angle,
+				motion_model_max_translation,
+				max_particle_size,
+				max_particle_size_kidnapped_robot,
+				distance_above_Z,
+				rgd_resolution,
+				max_number_considered_in_INNER_bucket,
+				max_number_considered_in_OUTER_bucket,
+				overlap_threshold,
+				propability_threshold,
+				rgd_2D_res))
+		{
+			ROS_FATAL ("problem with particle_filter.init() exit(-1)");
+			exit(-1);
+		}
+		if(!particle_filter.setGroundPointsFromMap(point_cloud_semantic_map_label_floor_ground))
+		{
+			ROS_FATAL("problem with particle_filter.setGroundPointsFromMap() exit(-1)");
+			exit(-1);
+		}
+
+		particle_filter.genParticlesKidnappedRobot();
+
+		if(!particle_filter.copyReferenceModelToGPU(point_cloud_semantic_map))
+		{
+			ROS_FATAL("problem with particle_filter.copyReferenceModelToGPU(point_cloud_semantic_map)  exit(-1)");
+			exit(-1);
+		}
+		if(!particle_filter.computeRGD())
+		{
+			ROS_FATAL("problem with particle_filter.computeRGD() exit(-1)");
+			exit(-1);
+		}
+
+		ros::spin();
+
+	}
+private:
+	void scanCallback(pcl::PointCloud<pcl::PointXYZ> scan);
+	void initalPoseCallback(geometry_msgs::PoseWithCovarianceStamped pose);
+	ros::NodeHandle n;
+
+
+	ros::Subscriber subInput;
+	ros::Subscriber subPose;
+
+	ros::Publisher bestPointcloudPub;
+	ros::Publisher mapPointcloudPub;
+	ros::Publisher particlePub;
+	ros::Publisher odometryPub;
+
+
+	pcl::PointCloud<Semantic::PointXYZL> point_cloud_semantic_map;
+	pcl::PointCloud<pcl::PointXYZ> point_cloud_semantic_map_label_floor_ground;
+
+	pcl::PointCloud<Semantic::PointXYZL> winning_point_cloud;
+
+	tf::TransformListener tf_listener;
+	Eigen::Affine3f lastOdometry;
+
+	float motion_model_max_angle;
+	float motion_model_max_translation;
+	int max_particle_size;
+	int max_particle_size_kidnapped_robot;
+	float distance_above_Z;
+	float rgd_resolution;
+	int cuda_device;
+	int max_number_considered_in_INNER_bucket;
+	int max_number_considered_in_OUTER_bucket;
+	float overlap_threshold;
+	float propability_threshold;
+	float rgd_2D_res;
+	CParticleFilterFast particle_filter;
+
+};
+
+void nodePF::initalPoseCallback(geometry_msgs::PoseWithCovarianceStamped pose)
+{
+	ROS_INFO("get initial pose");
+	particle_filter.setPose(pose);
+}
+void nodePF::scanCallback(pcl::PointCloud<pcl::PointXYZ> scan)
+{
+	try
+		{
+
+		//tf_listener->lookupTransform(frame_global, frame_robot, msg->header.stamp,
+		//		position_current);
+		tf::StampedTransform position_current;
+		tf_listener.lookupTransform("odom", /*frame_robot*/ scan.header.frame_id,ros::Time(0), position_current);
+
+		Eigen::Affine3d dm = Eigen::Affine3d::Identity();
+		tf::transformTFToEigen (position_current, dm);
+
+		Eigen::Affine3f currentOdometry = dm.cast<float>();
+
+
+		clock_t begin_time;
+		double computation_time;
+		begin_time = clock();
+
+		static int counter = 1;
+
+		Eigen::Affine3f odometryIncrement =lastOdometry.inverse() * currentOdometry;//= vscan_with_odo[counter-1].odo.inverse() * vscan_with_odo[counter].odo;
+
+		lastOdometry = currentOdometry;
+		pcl::PointCloud<Semantic::PointXYZL> labeled;
+
+		classify(scan,labeled);
+
+		if(!particle_filter.copyCurrentScanToGPU(labeled))
+		{
+			std::cout << "problem with cuda_nn.copyCurrentScanToGPU(current_scan) return" << std::endl;
+			return;
+		}
+
+		if(!particle_filter.update())return;
+
+		Eigen::Affine3f winM = particle_filter.getWinningParticle();
+
+		//if(show_winning_point_cloud)
+		{
+			winning_point_cloud = labeled;
+			transformPointCloud(winning_point_cloud, winning_point_cloud, winM);
+		}
+		particle_filter.prediction(odometryIncrement);
+
+
+		counter++;
+
+
+		computation_time=(double)( clock () - begin_time ) /  CLOCKS_PER_SEC;
+		std::cout << "particle filter singleIteration computation_time: " << computation_time << " counter: "<< counter <"\n";
+
+		point_cloud_semantic_map.header.frame_id = "map";
+		mapPointcloudPub.publish(point_cloud_semantic_map);
+
+		winning_point_cloud.header.frame_id = "map";
+		bestPointcloudPub.publish(winning_point_cloud);
+
+		geometry_msgs::PoseArray particles = particle_filter.getPoseArray();
+		particlePub.publish(particles);
+
+
+
+		nav_msgs::Odometry odoMsg = particle_filter.getOdom();
+		odoMsg.child_frame_id=scan.header.frame_id;
+		odometryPub.publish(odoMsg);
+
+
+
+	}
+	catch (tf::TransformException &ex)
+	{
+		ROS_ERROR_THROTTLE(100,"%s", ex.what());
+	}
+}
+
+
+int main(int argc, char** argv)
+{
+	ros::init(argc, argv, "mini_slam");
+	nodePF();
+}
+
+
+
+
+/// runs clasifier on given pcl::PointXYZ pointcloud, returns Semantic::PointXYZL
 void classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out)
 {
 	float normal_vectors_search_radius = 1.0f;
@@ -139,401 +371,4 @@ void classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::Point
 		 out[i].label = data[i].label;
 
 	 }
-}
-int main(int argc, char **argv)
-{
-	ros::init(argc, argv, "patricle_filter");
-	ros::NodeHandle n("~");
-	ros::Subscriber subInput   = n.subscribe("/velodyne_points",1, scanCallback);
-	tf_listener = new tf::TransformListener();
-	std::cout << "use case: particle filter localization fast" << std::endl;
-	std::cout << "data format: Semantic::PointXYZL" << std::endl;
-
-	if(argc < 2)
-	{
-		std::cout << "Usage:\n";
-		std::cout << argv[0] <<" point_cloud_semantic_map.pcd parameters\n";
-
-		std::cout << "Parameters:" << std::endl;
-		std::cout << "-mmma: motion_model_max_angle  default: " << motion_model_max_angle << std::endl;
-		std::cout << "-mmmt: motion_model_max_translation  default: " << motion_model_max_translation << std::endl;
-		std::cout << "-mps: max_particle_size  default: " << max_particle_size << std::endl;
-		std::cout << "-mpskr: max_particle_size_kidnapped_robot  default: " << max_particle_size_kidnapped_robot << std::endl;
-		std::cout << "-daz: distance_above_Z  default: " << distance_above_Z << std::endl;
-		std::cout << "-rgdr: rgd_resolution  default: " << rgd_resolution << std::endl;
-		std::cout << "-cd: cuda_device  default: " << cuda_device << std::endl;
-		std::cout << "-inner: max_number_considered_in_INNER_bucket  default: " << max_number_considered_in_INNER_bucket << std::endl;
-		std::cout << "-outer: max_number_considered_in_OUTER_bucket  default: " << max_number_considered_in_OUTER_bucket << std::endl;
-		std::cout << "-ot: overlap_threshold  default: " << overlap_threshold << std::endl;
-		std::cout << "-pt: propability_threshold  default: " << propability_threshold << std::endl;
-		std::cout << "-rgdr2D: rgd_2D_res  default: " << rgd_2D_res << std::endl;
-
-		std::cout << "return -1" << std::endl;
-		return -1;
-	}else
-	{
-		std::vector<int> ind_pcd;
-		ind_pcd = pcl::console::parse_file_extension_argument (argc, argv, ".pcd");
-
-		if(ind_pcd.size()!=1)
-		{
-			std::cout << "did you forget pcd file location? return" << std::endl;
-			std::cout << "return -1" << std::endl;
-			return -1;
-		}
-
-
-		pcl::PointCloud<pcl::PointXYZ> pointcloud_notlabeled;
-
-		if(pcl::io::loadPCDFile(argv[1],pointcloud_notlabeled) == -1)
-		{
-			std::cout << "return -1" << std::endl;
-			return -1;
-		}
-		classify(pointcloud_notlabeled, point_cloud_semantic_map);
-
-
-		std::cout << "classified \n";
-
-		for(size_t i = 0 ; i < point_cloud_semantic_map.size(); i++)
-		{
-			if(point_cloud_semantic_map[i].label == FLOOR_GROUND)
-			{
-				pcl::PointXYZ p;
-				p.x = point_cloud_semantic_map[i].x;
-				p.y = point_cloud_semantic_map[i].y;
-				p.z = point_cloud_semantic_map[i].z;
-				point_cloud_semantic_map_label_floor_ground.push_back(p);
-			}
-		}
-
-
-		std::cout << "point_cloud_semantic_map_label_floor_ground size" << point_cloud_semantic_map_label_floor_ground.size()<<"\n";
-		pcl::console::parse_argument (argc, argv, "-mmma", motion_model_max_angle);
-		std::cout << "motion_model_max_angle: " << motion_model_max_angle << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-mmmt", motion_model_max_translation);
-		std::cout << "motion_model_max_translation: " << motion_model_max_translation << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-mps", max_particle_size);
-		std::cout << "max_particle_size: " << max_particle_size << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-mpskr", max_particle_size_kidnapped_robot);
-		std::cout << "max_particle_size_kidnapped_robot: " << max_particle_size_kidnapped_robot << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-daz", distance_above_Z);
-		std::cout << "distance_above_Z: " << distance_above_Z << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-rgdr", rgd_resolution);
-		std::cout << "rgd_resolution: " << rgd_resolution << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-cd", cuda_device);
-		std::cout << "cuda_device: " << cuda_device << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-inner", max_number_considered_in_INNER_bucket);
-		std::cout << "max_number_considered_in_INNER_bucket: " << max_number_considered_in_INNER_bucket << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-outer", max_number_considered_in_OUTER_bucket);
-		std::cout << "max_number_considered_in_OUTER_bucket: " << max_number_considered_in_OUTER_bucket << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-ot", overlap_threshold);
-		std::cout << "overlap_threshold: " << overlap_threshold << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-pt", propability_threshold);
-		std::cout << "propability_threshold: " << propability_threshold << std::endl;
-
-		pcl::console::parse_argument (argc, argv, "-rgdr2D", rgd_2D_res);
-		std::cout << "rgd_2D_res: " << rgd_2D_res << std::endl;
-	}
-
-	if(!particle_filter.init(cuda_device,
-			motion_model_max_angle,
-			motion_model_max_translation,
-			max_particle_size,
-			max_particle_size_kidnapped_robot,
-			distance_above_Z,
-			rgd_resolution,
-			max_number_considered_in_INNER_bucket,
-			max_number_considered_in_OUTER_bucket,
-			overlap_threshold,
-			propability_threshold,
-			rgd_2D_res))
-	{
-		std::cout << "problem with particle_filter.init() exit(-1)" << std::endl;
-		exit(-1);
-	}
-	if(!particle_filter.setGroundPointsFromMap(point_cloud_semantic_map_label_floor_ground))
-	{
-		std::cout << "problem with particle_filter.setGroundPointsFromMap() exit(-1)" << std::endl;
-		exit(-1);
-	}
-
-	particle_filter.genParticlesKidnappedRobot();
-
-	if(!particle_filter.copyReferenceModelToGPU(point_cloud_semantic_map))
-	{
-		std::cout << "problem with particle_filter.copyReferenceModelToGPU(point_cloud_semantic_map)  exit(-1)" << std::endl;
-		exit(-1);
-	}
-	if(!particle_filter.computeRGD())
-	{
-		std::cout << "problem with particle_filter.computeRGD() exit(-1)" << std::endl;
-		exit(-1);
-	}
-
-	if (false == initGL(&argc, argv))
-	{
-		return -1;
-	}
-
-	printHelp();
-
-	glutDisplayFunc(display);
-	glutKeyboardFunc(keyboard);
-	glutMouseFunc(mouse);
-	glutMotionFunc(motion);
-    glutReshapeFunc(reshape);
-	glutIdleFunc(singleIteration);
-	glutMainLoop();
-}
-
-bool initGL(int *argc, char **argv)
-{
-    glutInit(argc, argv);
-    glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE);
-    glutInitWindowSize(window_width, window_height);
-    glutCreateWindow("Particle Filter Localization fast");
-    glutDisplayFunc(display);
-    glutKeyboardFunc(keyboard);
-    glutMotionFunc(motion);
-    glutReshapeFunc(reshape);
-
-    glClearColor(0.0, 0.0, 0.0, 1.0);
-    glDisable(GL_DEPTH_TEST);
-
-    glViewport(0, 0, window_width, window_height);
-
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluPerspective(60.0, (GLfloat)window_width / (GLfloat) window_height, 0.01, 10000.0);
-
-    return true;
-}
-
-void reshape(int width, int height) {
-    glViewport(0, 0, width, height);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluPerspective(60.0, (GLfloat)width / (GLfloat) height, 0.01, 10000.0);
-}
-
-void display()
-{
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glTranslatef(translate_x, translate_y, translate_z);
-    glRotatef(rotate_x, 1.0, 0.0, 0.0);
-    glRotatef(rotate_y, 0.0, 0.0, 1.0);
-
-    glBegin(GL_LINES);
-   	glColor3f(1.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(1.0f, 0.0f, 0.0f);
-
-    glColor3f(0.0f, 1.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 1.0f, 0.0f);
-
-    glColor3f(0.0f, 0.0f, 1.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 1.0f);
-    glEnd();
-
-    glPointSize(1.0f);
-    glBegin(GL_POINTS);
-	for(size_t i = 0; i < point_cloud_semantic_map.size(); i++)
-	{
-		if(point_cloud_semantic_map[i].label<16 && point_cloud_semantic_map[i].label>=0)
-		{
-			glColor3f(colors[point_cloud_semantic_map[i].label][0], colors[point_cloud_semantic_map[i].label][1], colors[point_cloud_semantic_map[i].label][2]);
-		}else
-		{
-
-			glColor3f(0.7f, 0.7f, 0.7f);
-		}
-		glVertex3f(point_cloud_semantic_map[i].x, point_cloud_semantic_map[i].y, point_cloud_semantic_map[i].z);
-	}
-	glEnd();
-
-	glPointSize(5.0f);
-	glBegin(GL_POINTS);
-	for(size_t i = 0; i < winning_point_cloud.size(); i++)
-	{
-		if(winning_point_cloud[i].label<16 && winning_point_cloud[i].label>=0)
-		{
-			glColor3f(colors[winning_point_cloud[i].label][0], colors[winning_point_cloud[i].label][1], colors[winning_point_cloud[i].label][2]);
-		}else
-		{
-			glColor3f(0.7f, 0.7f, 0.7f);
-		}
-		glVertex3f(winning_point_cloud[i].x, winning_point_cloud[i].y, winning_point_cloud[i].z);
-	}
-	glEnd();
-
-	particle_filter.render();
-
-    glutSwapBuffers();
-}
-
-void keyboard(unsigned char key, int /*x*/, int /*y*/)
-{
-    switch (key)
-    {
-        case (27) :
-            glutDestroyWindow(glutGetWindow());
-            return;
-        case 'i':
-        {
-        	is_iteration =! is_iteration;
-        	break;
-        }
-        case 'g':
-        {
-        	particle_filter.genParticlesKidnappedRobot();
-        	break;
-        }
-        case 's':
-        {
-        	show_winning_point_cloud = !show_winning_point_cloud;
-        	break;
-        }
-
-    }
-    glutPostRedisplay();
-    printHelp();
-}
-
-void mouse(int button, int state, int x, int y)
-{
-    if (state == GLUT_DOWN)
-    {
-        mouse_buttons |= 1<<button;
-    }
-    else if (state == GLUT_UP)
-    {
-        mouse_buttons = 0;
-    }
-
-    mouse_old_x = x;
-    mouse_old_y = y;
-}
-
-void motion(int x, int y)
-{
-    float dx, dy;
-    dx = (float)(x - mouse_old_x);
-    dy = (float)(y - mouse_old_y);
-
-    if (mouse_buttons & 1)
-    {
-        rotate_x += dy * 0.2f;
-        rotate_y += dx * 0.2f;
-
-    }
-    else if (mouse_buttons & 4)
-    {
-        translate_z += dy * 0.05f;
-    }
-    else if (mouse_buttons & 3)
-    {
-            translate_x += dx * 0.05f;
-            translate_y -= dy * 0.05f;
-    }
-
-    mouse_old_x = x;
-    mouse_old_y = y;
-
-    glutPostRedisplay();
-}
-
-void printHelp()
-{
-	std::cout << "----------------------" << std::endl;
-
-	std::cout << "press 'i': is_iteration =! is_iteration (start stop particle filter computations)" << std::endl;
-	std::cout << "press 'g': genParticlesKidnappedRobot()" << std::endl;
-	std::cout << "press 's': show_winning_point_cloud = !show_winning_point_cloud" << std::endl;
-
-	std::cout << "press 'Esc': EXIT" << std::endl;
-}
-
-
-void scanCallback(pcl::PointCloud<pcl::PointXYZ> scan)
-{
-
-	try
-	{
-
-		//tf_listener->lookupTransform(frame_global, frame_robot, msg->header.stamp,
-		//		position_current);
-		tf::StampedTransform position_current;
-		tf_listener->lookupTransform("odom", /*frame_robot*/ scan.header.frame_id,ros::Time(0), position_current);
-
-		Eigen::Affine3d dm = Eigen::Affine3d::Identity();
-		tf::transformTFToEigen (position_current, dm);
-
-		Eigen::Affine3f currentOdometry = dm.cast<float>();
-
-
-		clock_t begin_time;
-		double computation_time;
-		begin_time = clock();
-
-		static int counter = 1;
-
-		Eigen::Affine3f odometryIncrement =lastOdometry.inverse() * currentOdometry;//= vscan_with_odo[counter-1].odo.inverse() * vscan_with_odo[counter].odo;
-
-		lastOdometry = currentOdometry;
-		pcl::PointCloud<Semantic::PointXYZL> labeled;
-
-		classify(scan,labeled);
-
-		if(!particle_filter.copyCurrentScanToGPU(labeled))
-		{
-			std::cout << "problem with cuda_nn.copyCurrentScanToGPU(current_scan) return" << std::endl;
-			return;
-		}
-
-		if(!particle_filter.update())return;
-
-		Eigen::Affine3f winM = particle_filter.getWinningParticle();
-
-		if(show_winning_point_cloud)
-		{
-			winning_point_cloud = labeled;
-			transformPointCloud(winning_point_cloud, winning_point_cloud, winM);
-		}
-		particle_filter.prediction(odometryIncrement);
-
-
-		counter++;
-
-
-		computation_time=(double)( clock () - begin_time ) /  CLOCKS_PER_SEC;
-		std::cout << "particle filter singleIteration computation_time: " << computation_time << " counter: "<< counter <"\n";
-	}catch (tf::TransformException &ex)
-	{
-		ROS_ERROR("%s", ex.what());
-	}
-	glutPostRedisplay();
-}
-
-void singleIteration()
-{
-	ros::spinOnce();
-
-
 }

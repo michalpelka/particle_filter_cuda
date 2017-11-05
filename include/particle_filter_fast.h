@@ -13,6 +13,11 @@
 #include "point_types.h"
 #include "cudaFunctions.h"
 
+#include <geometry_msgs/PoseArray.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <nav_msgs/Odometry.h>
+
+
 class CParticleFilterFast
 {
 public:
@@ -61,8 +66,18 @@ public:
 
 	void render();
 
+	void setPose (geometry_msgs::PoseWithCovarianceStamped pose);
+	geometry_msgs::PoseArray getPoseArray();
+	nav_msgs::Odometry getOdom();
+
+//
 
 private:
+
+	float randFloat()
+	{
+		return static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
+	}
 	float distance_above_Z;
 	pcl::PointCloud<pcl::PointXYZ> ground_points_from_map;
 	pcl::PointXYZ *d_ground_points_from_map;

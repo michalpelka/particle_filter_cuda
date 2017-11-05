@@ -1,6 +1,7 @@
 #include "particle_filter_fast.h"
 #include <GL/freeglut.h>
-
+#include <tf/tf.h>
+#include <tf_conversions/tf_eigen.h>
 CParticleFilterFast::CParticleFilterFast()
 {
 	this->motion_model_max_angle = 10.0f;
@@ -630,6 +631,7 @@ Eigen::Affine3f CParticleFilterFast::getWinningParticle()
 return out_matrix;
 }
 
+
 void CParticleFilterFast::render()
 {
 	glPushAttrib (GL_ALL_ATTRIB_BITS);
@@ -656,4 +658,181 @@ void CParticleFilterFast::render()
 	glPopAttrib();
 }
 
+nav_msgs::Odometry CParticleFilterFast::getOdom()
+{
 
+	double sumX =0;
+	double sumY =0;
+	double sumZ =0;
+	double sumYaw =0;
+
+
+
+	double sumWeights = 0;
+
+	double num = 0;
+	for(size_t i = 0 ; i < vparticles.size(); i++)
+	{
+		if(vparticles[i].v_particle_states.size()>0)
+		{
+			particle_state_t state = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1];
+			double weight = vparticles[i].W;
+			sumX +=weight * state.matrix(0,3);
+			sumY +=weight * state.matrix(1,3);
+			sumZ +=weight * state.matrix(2,3);
+
+			Eigen::Vector3f rpy = state.matrix.rotation().eulerAngles(0, 1, 2);
+			sumYaw += weight * rpy(2);
+			sumWeights += weight;
+		}
+	}
+
+
+	double uX   = sumX / (sumWeights);
+	double uY   = sumY / (sumWeights);
+	double uZ   = sumZ / (sumWeights);
+	double uYaw = sumYaw / (sumWeights);
+
+	double qqX =0;
+	double qqY =0;
+	double qqZ =0;
+
+	double qqYaw =0;
+	sumWeights = 0;
+	for(size_t i = 0 ; i < vparticles.size(); i++)
+	{
+		if(vparticles[i].v_particle_states.size()>0)
+		{
+			particle_state_t state = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1];
+			double weight = fabs(vparticles[i].W);
+			qqX +=  weight * (state.matrix(0,3) - uX)*(state.matrix(0,3) - uX);
+			qqY +=  weight * (state.matrix(1,3) - uY)*(state.matrix(1,3) - uY);
+			qqZ +=  weight * (state.matrix(2,3) - uZ)*(state.matrix(2,3) - uZ);
+
+
+			Eigen::Vector3f rpy = state.matrix.rotation().eulerAngles(0, 1, 2);
+			qqYaw += weight * (uYaw - rpy(2)) * (uYaw - rpy(2));
+			sumWeights += weight;
+			if (weight!=0)
+			{
+				num = num + 1.0;
+			}
+
+		}
+	}
+
+
+
+
+	nav_msgs::Odometry odoMsg;
+
+
+
+	odoMsg.pose.covariance[0]  = 10* qqX   / ( (num - 1) * sumWeights  / num ) ;
+	odoMsg.pose.covariance[7]  = 10*qqY   / ( (num - 1) * sumWeights  / num );
+	odoMsg.pose.covariance[35] = 10*qqYaw / ( (num - 1) * sumWeights  / num );
+
+	Eigen::Quaterniond eigenQuatd(
+			Eigen::AngleAxisd(0.0f, Eigen::Vector3d::UnitX())*
+	  	  	Eigen::AngleAxisd(0.0f, Eigen::Vector3d::UnitY())*
+			Eigen::AngleAxisd(uYaw, Eigen::Vector3d::UnitZ())
+	);
+
+
+	odoMsg.pose.pose.position.x = uX;
+	odoMsg.pose.pose.position.y = uY;
+	odoMsg.pose.pose.position.z = uZ;
+
+	odoMsg.pose.pose.orientation.w = eigenQuatd.w();
+	odoMsg.pose.pose.orientation.x = eigenQuatd.x();
+	odoMsg.pose.pose.orientation.y = eigenQuatd.y();
+	odoMsg.pose.pose.orientation.z = eigenQuatd.z();
+
+
+
+	odoMsg.child_frame_id="";
+	odoMsg.header.frame_id = "map";
+	odoMsg.header.stamp = ros::Time::now();
+
+
+	return odoMsg;
+}
+geometry_msgs::PoseArray CParticleFilterFast::getPoseArray()
+{
+	geometry_msgs::PoseArray poseArray;
+	poseArray.header.stamp    = ros::Time::now();
+	poseArray.header.frame_id = "map";
+
+	if(vparticles.size() > 0)
+	{
+		for(size_t i = 0 ; i < vparticles.size(); i++)
+		{
+			if(vparticles[i].v_particle_states.size()>0)
+			{
+				geometry_msgs::Pose pose;
+				pose.position.x = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix(0,3);
+				pose.position.y = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix(1,3);
+				pose.position.z = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix(2,3);
+				Eigen::Quaternionf qf( vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix.rotation());
+				pose.orientation.w = qf.w();
+				pose.orientation.x = qf.x();
+				pose.orientation.y = qf.y();
+				pose.orientation.z = qf.z();
+				poseArray.poses.push_back(pose);
+			}
+		}
+	}
+	return poseArray;
+}
+void CParticleFilterFast::setPose (geometry_msgs::PoseWithCovarianceStamped pose)
+{
+	this->vparticles.clear();
+
+	double meanX = pose.pose.pose.position.x;
+	double meanY = pose.pose.pose.position.y;
+	double meanZ = pose.pose.pose.position.z;
+	double diffX = pose.pose.covariance.elems[0];
+	double diffY = pose.pose.covariance.elems[7];
+	double diffYaw = pose.pose.covariance.elems[35];
+	tf::Quaternion qaternion;
+	tf::quaternionMsgToTF(pose.pose.pose.orientation,qaternion);
+	double t1,t2,meanYaw;
+	tf::Matrix3x3(qaternion).getEulerYPR(meanYaw,t1,t2);
+
+	std::vector<particle_t> vparticlesTemp;
+
+	for(int i = 0 ; i < max_particle_size_kidnapped_robot; i++)
+	{
+		particle_state_t p;
+		p.matrix = Eigen::Affine3f::Identity();
+		pcl::PointXYZ point;
+
+
+		p.matrix(0,3) = meanX+randFloat()*diffX;
+		p.matrix(1,3) = meanY+randFloat()*diffX;;
+		p.matrix(2,3) = distance_above_Z;
+
+		p.overlap = 0.0f;
+
+		particle_t pp;
+		pp.v_particle_states.push_back(p);
+		pp.W = 0.0f;
+		pp.nW = 0.0f;
+		pp.isOverlapOK = false;
+		vparticles.push_back(pp);
+
+		Eigen::Affine3f m;
+				m = Eigen::AngleAxisf(0.0f, Eigen::Vector3f::UnitX())
+					  * Eigen::AngleAxisf(0.0f, Eigen::Vector3f::UnitY())
+					  * Eigen::AngleAxisf(meanYaw+diffYaw*randFloat(), Eigen::Vector3f::UnitZ());
+
+		particle_t particle = vparticles[i];
+		particle.v_particle_states[0].matrix = particle.v_particle_states[0].matrix * m;
+
+		vparticlesTemp.push_back(particle);
+	}
+
+
+
+	vparticles = vparticlesTemp;
+}
