@@ -17,6 +17,29 @@
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <nav_msgs/Odometry.h>
 
+#include <cudaWrapper.h>
+// helper fuunction to classify pointcloud
+class CPointcloudClassifier
+{
+public:
+	CPointcloudClassifier(int cudaDevice = 0,
+			float normal_vectors_search_radius = 1.0f,
+			float curvature_threshold = 0.0f,
+			float ground_Z_coordinate_threshold = 1,
+			int number_of_points_needed_for_plane_threshold =1,
+			int max_number_considered_in_INNER_bucket = 100,
+			int max_number_considered_in_OUTER_bucket = 100);
+
+	void classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out);
+private:
+	int cudaDevice;
+	float normal_vectors_search_radius;
+	float curvature_threshold;
+	float ground_Z_coordinate_threshold;
+	int number_of_points_needed_for_plane_threshold;
+	int max_number_considered_in_INNER_bucket;
+	int max_number_considered_in_OUTER_bucket;
+};
 
 class CParticleFilterFast
 {
