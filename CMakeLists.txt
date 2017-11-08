@@ -13,7 +13,7 @@ find_package(catkin REQUIRED
   	message_generation
   	tf_conversions    
   	)
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake" "${CMAKE_SOURCE_DIR}/particle_filter_cuda/cmake")
 
 catkin_package(
 #  INCLUDE_DIRS include
