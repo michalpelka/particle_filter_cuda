@@ -312,7 +312,7 @@ bool CParticleFilterFast::update()
 			this->rgd_params,
 			d_nn,
 			particle_state.overlap) != ::cudaSuccess)return false;
-
+		particle_state.overlap =  particle_state.overlap * particle_state.overlap;
 		computation_time_computeNN += (double)( clock () - begin_time ) /  CLOCKS_PER_SEC;
 
 		if(particle_state.overlap < this->overlap_threshold)

@@ -57,9 +57,15 @@ public:
 		n.param<std::string>("topic_laser3D", topic_laser3D, "/velodyne_points");
 		ROS_INFO("param topic_laser3D: '%s'", topic_laser3D.c_str());
 
+		std::string topic_odom;
+		n.param<std::string>("topic_odom", topic_odom, "/simple_robot_velocity_controller/odom");
+				ROS_INFO("param topic_laser3D: '%s'", topic_laser3D.c_str());
+
 		//subInput   = n.subscribe(topic_laser3D,1, &nodeSlam::scanCallback, this);
 		subInput   			= n.subscribe(topic_laser3D,1, &nodePF::scanCallback, this);
 		subPose   			= n.subscribe("/initialpose",1, &nodePF::initalPoseCallback, this);
+		subOdom   			= n.subscribe(topic_odom,1, &nodePF::odometryCallback, this);
+
 
 		bestPointcloudPub 	= n.advertise<pcl::PointCloud<Semantic::PointXYZL> >("bestPointCloud",1);
 		mapPointcloudPub	= n.advertise<pcl::PointCloud<Semantic::PointXYZL> >("mapPointCloud",1);;
@@ -85,7 +91,7 @@ public:
 
 
 		//rgd_resolution = 1.0f;
-		n.param<float>("rgd_resolution", rgd_resolution, 1);
+		n.param<float>("rgd_resolution", rgd_resolution, 0.5f);
 
 		//cuda_device = 0;
 		n.param<int>("cuda_device", cuda_device, 0);
@@ -202,11 +208,13 @@ public:
 private:
 	void scanCallback(pcl::PointCloud<pcl::PointXYZ> scan);
 	void initalPoseCallback(geometry_msgs::PoseWithCovarianceStamped pose);
+	void odometryCallback(nav_msgs::Odometry odom);
 	ros::NodeHandle n;
 
 
 	ros::Subscriber subInput;
 	ros::Subscriber subPose;
+	ros::Subscriber subOdom;
 
 	ros::Publisher bestPointcloudPub;
 	ros::Publisher mapPointcloudPub;
@@ -214,6 +222,7 @@ private:
 	ros::Publisher odometryPub;
 
 
+	nav_msgs::Odometry lastOdom;
 	pcl::PointCloud<Semantic::PointXYZL> point_cloud_semantic_map;
 	pcl::PointCloud<pcl::PointXYZ> point_cloud_semantic_map_label_floor_ground;
 
@@ -243,6 +252,12 @@ void nodePF::initalPoseCallback(geometry_msgs::PoseWithCovarianceStamped pose)
 	ROS_INFO("get initial pose");
 	particle_filter.setPose(pose);
 }
+
+
+void nodePF::odometryCallback(nav_msgs::Odometry odom)
+{
+	lastOdom = odom;
+}
 void nodePF::scanCallback(pcl::PointCloud<pcl::PointXYZ> scan)
 {
 	try
@@ -250,11 +265,23 @@ void nodePF::scanCallback(pcl::PointCloud<pcl::PointXYZ> scan)
 
 		//tf_listener->lookupTransform(frame_global, frame_robot, msg->header.stamp,
 		//		position_current);
-		tf::StampedTransform position_current;
-		tf_listener.lookupTransform("odom", /*frame_robot*/ scan.header.frame_id,ros::Time(0), position_current);
+//		tf::StampedTransform position_current;
+//		tf_listener.lookupTransform("odom", /*frame_robot*/ scan.header.frame_id,ros::Time(0), position_current);
 
 		Eigen::Affine3d dm = Eigen::Affine3d::Identity();
-		tf::transformTFToEigen (position_current, dm);
+
+		{
+			dm.translation().x() = lastOdom.pose.pose.position.x;
+			dm.translation().y() = lastOdom.pose.pose.position.y;
+			dm.translation().z() = lastOdom.pose.pose.position.z;
+			Eigen::Quaterniond qd;
+			qd.w() = lastOdom.pose.pose.orientation.w;
+			qd.x() = lastOdom.pose.pose.orientation.x;
+			qd.y() = lastOdom.pose.pose.orientation.y;
+			qd.z() = lastOdom.pose.pose.orientation.z;
+
+			dm.rotate(qd);
+		}
 
 		Eigen::Affine3f currentOdometry = dm.cast<float>();
 
@@ -324,7 +351,7 @@ void nodePF::scanCallback(pcl::PointCloud<pcl::PointXYZ> scan)
 
 int main(int argc, char** argv)
 {
-	ros::init(argc, argv, "mini_slam");
+	ros::init(argc, argv, "particle_filter");
 	nodePF();
 }
 
