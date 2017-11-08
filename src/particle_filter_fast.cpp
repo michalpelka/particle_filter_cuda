@@ -2,6 +2,67 @@
 #include <GL/freeglut.h>
 #include <tf/tf.h>
 #include <tf_conversions/tf_eigen.h>
+
+CPointcloudClassifier::CPointcloudClassifier(int cudaDevice,
+			float normal_vectors_search_radius,
+			float curvature_threshold,
+			float ground_Z_coordinate_threshold,
+			int number_of_points_needed_for_plane_threshold,
+			int max_number_considered_in_INNER_bucket,
+			int max_number_considered_in_OUTER_bucket)
+	{
+		this->cudaDevice = cudaDevice;
+		this->normal_vectors_search_radius = normal_vectors_search_radius;
+		this->curvature_threshold = curvature_threshold;
+		this->ground_Z_coordinate_threshold = ground_Z_coordinate_threshold;
+		this->number_of_points_needed_for_plane_threshold = number_of_points_needed_for_plane_threshold;
+		this->max_number_considered_in_INNER_bucket = max_number_considered_in_INNER_bucket;
+		this->max_number_considered_in_OUTER_bucket = max_number_considered_in_OUTER_bucket;
+	}
+
+void CPointcloudClassifier::classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out)
+{
+//	float normal_vectors_search_radius = 1.0f;
+//	float curvature_threshold = 0;
+//	float ground_Z_coordinate_threshold = 1;
+//	int number_of_points_needed_for_plane_threshold =1;
+//	int max_number_considered_in_INNER_bucket = 100;
+//	int max_number_considered_in_OUTER_bucket = 100;
+
+	CCudaWrapper ccWraper;
+
+	ccWraper.downsampling(in,0.2);
+
+	 pcl::PointCloud<Semantic::PointXYZNL> data;
+	 data.resize(in.size());
+	 for (int i =0; i< in.size(); i++)
+	 {
+		 data[i].x = in[i].x;
+		 data[i].y = in[i].y;
+		 data[i].z = in[i].z;
+	 }
+	 ccWraper.classify(
+			data,
+			data.size(),
+			normal_vectors_search_radius,
+			curvature_threshold,
+			ground_Z_coordinate_threshold,
+			number_of_points_needed_for_plane_threshold,
+			max_number_considered_in_INNER_bucket,
+			max_number_considered_in_OUTER_bucket );
+
+	 out.resize(data.size());
+	 for (int i =0; i< data.size(); i++)
+	 {
+		 out[i].x = data[i].x;
+		 out[i].y = data[i].y;
+		 out[i].z = data[i].z;
+		 out[i].label = data[i].label;
+
+	 }
+}
+
+
 CParticleFilterFast::CParticleFilterFast()
 {
 	this->motion_model_max_angle = 10.0f;

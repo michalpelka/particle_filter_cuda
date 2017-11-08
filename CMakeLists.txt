@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(particle_filter_cuda)
 
-find_package(catkin REQUIRED 
+find_package(catkin REQUIRED COMPONENTS 
 	roscpp
 	cmake_modules
 	pcl_conversions
@@ -77,6 +77,18 @@ cuda_add_executable(particle_filter_localization_fast_node
 )
 
 target_link_libraries(particle_filter_localization_fast_node
+	${OPENGL_LIBRARIES}
+	${GLUT_LIBRARIES}
+	${PCL_LIBRARIES}
+	${catkin_LIBRARIES}
+)
+cuda_add_executable(classifyMap
+	src/classify.cpp
+	src/particle_filter_fast.cpp
+	${COMMON_SOURCES}
+)
+
+target_link_libraries(classifyMap
 	${OPENGL_LIBRARIES}
 	${GLUT_LIBRARIES}
 	${PCL_LIBRARIES}

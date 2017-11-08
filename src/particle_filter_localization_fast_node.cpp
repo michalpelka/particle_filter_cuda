@@ -35,7 +35,6 @@
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <nav_msgs/Odometry.h>
 
-void classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out);
 
 typedef struct scan_with_odo
 {
@@ -132,7 +131,8 @@ public:
 				ROS_FATAL("cannot load PCD!");
 				exit(-1);
 			}
-			classify(pointcloud_notlabeled, point_cloud_semantic_map);
+			CPointcloudClassifier classifier(0);
+			classifier.classify(pointcloud_notlabeled, point_cloud_semantic_map);
 		}
 		// load PCD only
 		if (fnMapClassified.size() != 0)
@@ -270,7 +270,8 @@ void nodePF::scanCallback(pcl::PointCloud<pcl::PointXYZ> scan)
 		lastOdometry = currentOdometry;
 		pcl::PointCloud<Semantic::PointXYZL> labeled;
 
-		classify(scan,labeled);
+		CPointcloudClassifier classifier (0);
+		classifier.classify(scan,labeled);
 
 		if(!particle_filter.copyCurrentScanToGPU(labeled))
 		{
@@ -331,44 +332,4 @@ int main(int argc, char** argv)
 
 
 /// runs clasifier on given pcl::PointXYZ pointcloud, returns Semantic::PointXYZL
-void classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out)
-{
-	float normal_vectors_search_radius = 1.0f;
-	float curvature_threshold = 0;
-	float ground_Z_coordinate_threshold = 1;
-	int number_of_points_needed_for_plane_threshold =1;
-	int max_number_considered_in_INNER_bucket = 100;
-	int max_number_considered_in_OUTER_bucket = 100;
 
-	CCudaWrapper ccWraper;
-
-	ccWraper.downsampling(in,0.2);
-
-	 pcl::PointCloud<Semantic::PointXYZNL> data;
-	 data.resize(in.size());
-	 for (int i =0; i< in.size(); i++)
-	 {
-		 data[i].x = in[i].x;
-		 data[i].y = in[i].y;
-		 data[i].z = in[i].z;
-	 }
-	 ccWraper.classify(
-			data,
-			data.size(),
-			normal_vectors_search_radius,
-			curvature_threshold,
-			ground_Z_coordinate_threshold,
-			number_of_points_needed_for_plane_threshold,
-			max_number_considered_in_INNER_bucket,
-			max_number_considered_in_OUTER_bucket );
-
-	 out.resize(data.size());
-	 for (int i =0; i< data.size(); i++)
-	 {
-		 out[i].x = data[i].x;
-		 out[i].y = data[i].y;
-		 out[i].z = data[i].z;
-		 out[i].label = data[i].label;
-
-	 }
-}
