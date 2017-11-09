@@ -18,6 +18,7 @@ CPointcloudClassifier::CPointcloudClassifier(int cudaDevice,
 		this->number_of_points_needed_for_plane_threshold = number_of_points_needed_for_plane_threshold;
 		this->max_number_considered_in_INNER_bucket = max_number_considered_in_INNER_bucket;
 		this->max_number_considered_in_OUTER_bucket = max_number_considered_in_OUTER_bucket;
+
 	}
 
 void CPointcloudClassifier::classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out)
@@ -95,6 +96,7 @@ CParticleFilterFast::CParticleFilterFast()
 
 	this->d_rgd = NULL;
 	this->rgd_2D_res = 5.0f;
+	solutionOffset=Eigen::Affine3f::Identity();
 }
 
 CParticleFilterFast::~CParticleFilterFast()
@@ -688,7 +690,7 @@ Eigen::Affine3f CParticleFilterFast::getWinningParticle()
 {
 	Eigen::Affine3f out_matrix;
 	if(vparticles.size() == 0)return Eigen::Affine3f::Identity();
-	out_matrix = vparticles[0].v_particle_states[vparticles[0].v_particle_states.size()-1].matrix;
+	out_matrix = solutionOffset * vparticles[0].v_particle_states[vparticles[0].v_particle_states.size()-1].matrix;
 return out_matrix;
 }
 
@@ -737,12 +739,13 @@ nav_msgs::Odometry CParticleFilterFast::getOdom()
 		if(vparticles[i].v_particle_states.size()>0)
 		{
 			particle_state_t state = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1];
+			Eigen::Affine3f matrixOffseted = solutionOffset * state.matrix;
 			double weight = vparticles[i].W;
-			sumX +=weight * state.matrix(0,3);
-			sumY +=weight * state.matrix(1,3);
-			sumZ +=weight * state.matrix(2,3);
+			sumX +=weight * matrixOffseted(0,3);
+			sumY +=weight * matrixOffseted(1,3);
+			sumZ +=weight * matrixOffseted(2,3);
 
-			Eigen::Vector3f rpy = state.matrix.rotation().eulerAngles(0, 1, 2);
+			Eigen::Vector3f rpy = matrixOffseted.rotation().eulerAngles(0, 1, 2);
 			sumYaw += weight * rpy(2);
 			sumWeights += weight;
 		}
@@ -765,13 +768,14 @@ nav_msgs::Odometry CParticleFilterFast::getOdom()
 		if(vparticles[i].v_particle_states.size()>0)
 		{
 			particle_state_t state = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1];
+			Eigen::Affine3f matrixOffseted = solutionOffset * state.matrix;
 			double weight = fabs(vparticles[i].W);
-			qqX +=  weight * (state.matrix(0,3) - uX)*(state.matrix(0,3) - uX);
-			qqY +=  weight * (state.matrix(1,3) - uY)*(state.matrix(1,3) - uY);
-			qqZ +=  weight * (state.matrix(2,3) - uZ)*(state.matrix(2,3) - uZ);
+			qqX +=  weight * (matrixOffseted(0,3) - uX)*(matrixOffseted(0,3) - uX);
+			qqY +=  weight * (matrixOffseted(1,3) - uY)*(matrixOffseted(1,3) - uY);
+			qqZ +=  weight * (matrixOffseted(2,3) - uZ)*(matrixOffseted(2,3) - uZ);
 
 
-			Eigen::Vector3f rpy = state.matrix.rotation().eulerAngles(0, 1, 2);
+			Eigen::Vector3f rpy = matrixOffseted.rotation().eulerAngles(0, 1, 2);
 			qqYaw += weight * (uYaw - rpy(2)) * (uYaw - rpy(2));
 			sumWeights += weight;
 			if (weight!=0)
@@ -820,9 +824,11 @@ nav_msgs::Odometry CParticleFilterFast::getOdom()
 }
 geometry_msgs::PoseArray CParticleFilterFast::getPoseArray()
 {
+
 	geometry_msgs::PoseArray poseArray;
 	poseArray.header.stamp    = ros::Time::now();
 	poseArray.header.frame_id = "map";
+
 
 	if(vparticles.size() > 0)
 	{
@@ -831,15 +837,17 @@ geometry_msgs::PoseArray CParticleFilterFast::getPoseArray()
 			if(vparticles[i].v_particle_states.size()>0)
 			{
 				geometry_msgs::Pose pose;
-				pose.position.x = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix(0,3);
-				pose.position.y = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix(1,3);
-				pose.position.z = vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix(2,3);
-				Eigen::Quaternionf qf( vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix.rotation());
+				Eigen::Affine3f state = solutionOffset * vparticles[i].v_particle_states[vparticles[i].v_particle_states.size()-1].matrix;
+				pose.position.x = state(0,3);
+				pose.position.y = state(1,3);
+				pose.position.z = state(2,3);
+				Eigen::Quaternionf qf( state.rotation());
 				pose.orientation.w = qf.w();
 				pose.orientation.x = qf.x();
 				pose.orientation.y = qf.y();
 				pose.orientation.z = qf.z();
 				poseArray.poses.push_back(pose);
+
 			}
 		}
 	}
@@ -888,7 +896,7 @@ void CParticleFilterFast::setPose (geometry_msgs::PoseWithCovarianceStamped pose
 					  * Eigen::AngleAxisf(meanYaw+diffYaw*randFloat(), Eigen::Vector3f::UnitZ());
 
 		particle_t particle = vparticles[i];
-		particle.v_particle_states[0].matrix = particle.v_particle_states[0].matrix * m;
+		particle.v_particle_states[0].matrix = solutionOffset.inverse() * particle.v_particle_states[0].matrix * m;
 
 		vparticlesTemp.push_back(particle);
 	}

@@ -35,6 +35,8 @@
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <nav_msgs/Odometry.h>
 
+#include <dynamic_reconfigure/server.h>
+#include <particle_filter_cuda/particle_filter_cudaConfig.h>
 
 typedef struct scan_with_odo
 {
@@ -45,14 +47,14 @@ typedef struct scan_with_odo
 
 
 
+
 class nodePF
 {
 public:
 	nodePF():
 	n("~")
 	{
-		lastOdometry = Eigen::Affine3f::Identity();
-
+		solutionOffset = Eigen::Affine3f::Identity();
 		std::string topic_laser3D;
 		n.param<std::string>("topic_laser3D", topic_laser3D, "/velodyne_points");
 		ROS_INFO("param topic_laser3D: '%s'", topic_laser3D.c_str());
@@ -72,6 +74,11 @@ public:
 		particlePub			= n.advertise<geometry_msgs::PoseArray>("particles",1);
 		odometryPub			= n.advertise<nav_msgs::Odometry>("odometry",1);
 
+
+
+		dynamic_reconfigure::Server<particle_filter_cuda::particle_filter_cudaConfig> server;
+		dynamic_reconfigure::Server<particle_filter_cuda::particle_filter_cudaConfig>::CallbackType f = boost::bind(&nodePF::DynamicConfig, this, _1,_2);
+		server.setCallback(f);
 
 		//motion_model_max_angle = 10.0f;
 		n.param<float>("motion_model_max_angle", motion_model_max_angle, 5.0f);
@@ -152,6 +159,7 @@ public:
 		}
 
 
+
 		for(size_t i = 0 ; i < point_cloud_semantic_map.size(); i++)
 		{
 			if(point_cloud_semantic_map[i].label == FLOOR_GROUND)
@@ -166,7 +174,7 @@ public:
 
 		ROS_INFO("point_cloud_semantic_map_label_floor_ground size : %d", point_cloud_semantic_map_label_floor_ground.size());
 
-
+		lastOdometry = Eigen::Affine3f::Identity();
 		if(!particle_filter.init(cuda_device,
 				motion_model_max_angle,
 				motion_model_max_translation,
@@ -206,6 +214,9 @@ public:
 
 	}
 private:
+
+	void init();
+	void DynamicConfig(particle_filter_cuda::particle_filter_cudaConfig &config, uint32_t level);
 	void scanCallback(pcl::PointCloud<pcl::PointXYZ> scan);
 	void initalPoseCallback(geometry_msgs::PoseWithCovarianceStamped pose);
 	void odometryCallback(nav_msgs::Odometry odom);
@@ -231,6 +242,7 @@ private:
 	tf::TransformListener tf_listener;
 	Eigen::Affine3f lastOdometry;
 
+	Eigen::Affine3f solutionOffset;
 	float motion_model_max_angle;
 	float motion_model_max_translation;
 	int max_particle_size;
@@ -246,6 +258,18 @@ private:
 	CParticleFilterFast particle_filter;
 
 };
+
+
+void nodePF::DynamicConfig(particle_filter_cuda::particle_filter_cudaConfig &config, uint32_t level) {
+  ROS_INFO("Reconfigure Request: %f ", config.angular_map_offset);
+
+  Eigen::Affine3f m;
+  m = Eigen::AngleAxisf(0.0f, Eigen::Vector3f::UnitX())
+		  * Eigen::AngleAxisf(0.0f, Eigen::Vector3f::UnitY())
+		  * Eigen::AngleAxisf(M_PI*config.angular_map_offset/180.0, Eigen::Vector3f::UnitZ());
+  particle_filter.setSolutionOffset(m);
+
+}
 
 void nodePF::initalPoseCallback(geometry_msgs::PoseWithCovarianceStamped pose)
 {
@@ -324,8 +348,11 @@ void nodePF::scanCallback(pcl::PointCloud<pcl::PointXYZ> scan)
 		computation_time=(double)( clock () - begin_time ) /  CLOCKS_PER_SEC;
 		std::cout << "particle filter singleIteration computation_time: " << computation_time << " counter: "<< counter <"\n";
 
-		point_cloud_semantic_map.header.frame_id = "map";
-		mapPointcloudPub.publish(point_cloud_semantic_map);
+
+			pcl::PointCloud<Semantic::PointXYZL>point_cloud_semantic_map_offset = point_cloud_semantic_map;
+			transformPointCloud(point_cloud_semantic_map, point_cloud_semantic_map_offset, particle_filter.getSolutionOffset());
+			point_cloud_semantic_map_offset.header.frame_id = "map";
+			mapPointcloudPub.publish(point_cloud_semantic_map_offset);
 
 		winning_point_cloud.header.frame_id = "map";
 		bestPointcloudPub.publish(winning_point_cloud);

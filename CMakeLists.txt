@@ -11,10 +11,13 @@ find_package(catkin REQUIRED COMPONENTS
 	tf
 	nav_msgs
   	message_generation
-  	tf_conversions    
+  	tf_conversions   
+	dynamic_reconfigure 
   	)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake" "${CMAKE_SOURCE_DIR}/particle_filter_cuda/cmake")
-
+generate_dynamic_reconfigure_options(
+  cfg/particle_filter_cuda.cfg
+)
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES particle_filter_cuda
@@ -75,7 +78,7 @@ cuda_add_executable(particle_filter_localization_fast_node
 	src/particle_filter_fast.cpp
 	${COMMON_SOURCES}
 )
-
+add_dependencies(particle_filter_localization_fast_node particle_filter_cuda_gencfg)
 target_link_libraries(particle_filter_localization_fast_node
 	${OPENGL_LIBRARIES}
 	${GLUT_LIBRARIES}

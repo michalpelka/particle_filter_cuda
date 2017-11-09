@@ -73,6 +73,14 @@ public:
 			float _overlap_threshold,
 			float _propability_threshold,
 			float _rgd_2D_res);
+	void setSolutionOffset(Eigen::Affine3f solutionOffset)
+	{
+		this->solutionOffset = solutionOffset;
+	}
+	Eigen::Affine3f getSolutionOffset()
+	{
+		return solutionOffset;
+	}
 	bool prediction(Eigen::Affine3f odometryIncrement);
 	bool update();
 
@@ -141,6 +149,8 @@ private:
 	float propability_threshold;
 
 	char *d_rgd;
+
+	Eigen::Affine3f solutionOffset;
 };
 
 
